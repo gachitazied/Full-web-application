@@ -2,6 +2,7 @@ package com.ziedgach.book.book;
 
 import com.ziedgach.book.common.PageResponse;
 import com.ziedgach.book.exception.OperationNotPermittedException;
+import com.ziedgach.book.file.FileStorageService;
 import com.ziedgach.book.history.BookTransactionHistory;
 import com.ziedgach.book.history.BookTransactionHistoryRepository;
 import com.ziedgach.book.user.User;
@@ -13,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Objects;
@@ -25,7 +27,7 @@ import static com.ziedgach.book.book.BookSpecification.withOwnerId;
 public class BookService {
     private final BookRepository bookRepository;
     private final BookMapper bookMapper;
-
+    private final FileStorageService fileStorageService ;
     private final BookTransactionHistoryRepository bookTransactionHistoryRepository;
 
     public Integer save(BookRequest request, Authentication connectedeUser) {
@@ -125,12 +127,101 @@ public class BookService {
                 .orElseThrow(()-> new EntityNotFoundException("No book found with Id :: " + bookId));
 
         User user = ((User) connectedUser.getPrincipal());
-        if (!Objects.equals(book.getOwner().getBooks(),user.getId()))
+        if (!Objects.equals(book.getOwner().getId(),user.getId()))
         {
-            throw  new OperationNotPermittedException("you cannot update books shareable status");
+            throw  new OperationNotPermittedException("you cannot update others books shareable status");
         }
         book.setShareable(!book.isShareable());
         bookRepository.save(book);
         return bookId ;
+    }
+
+    public Integer updateArchivedStatus(Integer bookId, Authentication connectedUser) {
+        Book book = bookRepository.findById(bookId)
+                .orElseThrow(()-> new EntityNotFoundException("No book found with Id :: " + bookId));
+
+        User user = ((User) connectedUser.getPrincipal());
+        if (!Objects.equals(book.getOwner().getId(),user.getId()))
+        {
+            throw  new OperationNotPermittedException("you cannot update others books Archived status");
+        }
+        book.setArchived(!book.isArchived());
+        bookRepository.save(book);
+        return bookId ;
+    }
+
+    public Integer borrowBook(Integer bookId, Authentication connectedUser) {
+        Book book = bookRepository.findById(bookId)
+                .orElseThrow(()-> new EntityNotFoundException("No book found with Id :: " + bookId));
+        if (book.isArchived() || !book.isShareable())
+        {
+            throw  new OperationNotPermittedException(" the requested book cannot be borrowed since it is archived or not shareable");
+        }
+        User user = ((User) connectedUser.getPrincipal());
+        if (Objects.equals(book.getOwner().getId(),user.getId()))
+        {
+            throw  new OperationNotPermittedException("you cannot borrow your own book");
+        }
+        final boolean isAlreadyBorrowed = bookTransactionHistoryRepository.isAlreadyBorrowedByUser(bookId,user.getId());
+
+        if(isAlreadyBorrowed)
+        {
+            throw  new OperationNotPermittedException(" the requested book os alrady borrowed");
+
+        }
+        BookTransactionHistory bookTransactionHistory = BookTransactionHistory.builder()
+                .user(user)
+                .book(book)
+                .returned(false)
+                .returnApproved(false)
+                .build();
+        return bookTransactionHistoryRepository.save(bookTransactionHistory).getId();
+
+    }
+
+    public Integer returnBorrowedBook(Integer bookId, Authentication connectedUser) {
+        Book book = bookRepository.findById(bookId)
+                .orElseThrow(()-> new EntityNotFoundException("No book found with Id :: " + bookId));
+        if (book.isArchived() || !book.isShareable())
+        {
+            throw  new OperationNotPermittedException(" the requested book cannot be borrowed since it is archived or not shareable");
+        }
+        User user = ((User) connectedUser.getPrincipal());
+        if (Objects.equals(book.getOwner().getId(),user.getId()))
+        {
+            throw  new OperationNotPermittedException("you cannot borrow or return your own book");
+        }
+        BookTransactionHistory bookTransactionHistory = bookTransactionHistoryRepository.findByBookIdAndUserID(bookId, user.getId())
+                .orElseThrow(()-> new OperationNotPermittedException("You did not borrow this book"));
+        bookTransactionHistory.setReturned(true);
+
+        return bookTransactionHistoryRepository.save(bookTransactionHistory).getId();
+    }
+
+    public Integer approveReturnBorrowedBook(Integer bookId, Authentication connectedUser) {
+        Book book = bookRepository.findById(bookId)
+                .orElseThrow(()-> new EntityNotFoundException("No book found with Id :: " + bookId));
+        if (book.isArchived() || !book.isShareable())
+        {
+            throw  new OperationNotPermittedException(" the requested book cannot be borrowed since it is archived or not shareable");
+        }
+        User user = ((User) connectedUser.getPrincipal());
+        if (Objects.equals(book.getOwner().getId(),user.getId()))
+        {
+            throw  new OperationNotPermittedException("you cannot borrow or return your own book");
+        }
+        BookTransactionHistory bookTransactionHistory = bookTransactionHistoryRepository.findByBookIdAndOwnerId(bookId, user.getId())
+                .orElseThrow(()-> new OperationNotPermittedException("The book is not returned yet . you cannot approve this return"));
+        bookTransactionHistory.setReturnApproved(true);
+        return bookTransactionHistoryRepository.save(bookTransactionHistory).getId();
+    }
+
+    public void uploadBookCoverPicture(MultipartFile file, Authentication connectedUser, Integer bookId) {
+        Book book = bookRepository.findById(bookId)
+                .orElseThrow(()-> new EntityNotFoundException("No book found with Id :: " + bookId));
+        User user = ((User) connectedUser.getPrincipal());
+        var bookCover = fileStorageService.saveFile(file,user.getId());
+        book.setBookCover(bookCover);
+        bookRepository.save(book);
     }
 }
